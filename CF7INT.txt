@@ -1,0 +1,951 @@
+<?php
+
+/*
+=========================================================
+INTEGRATIVE SYSTEMS FORM ACTIVITY LOGS
+=========================================================
+
+FEATURES
+---------------------------------------------------------
+1. Track successful Contact Form 7 submissions
+2. Track partially filled forms
+3. Track page title + page URL
+4. Track activity date & time
+5. Public report URL
+6. Password protected report
+7. Filters:
+   - Date range
+   - Page title
+   - Activity type
+8. Color coded statuses
+9. Mobile responsive report
+10. Logout support
+11. Duplicate prevention
+
+=========================================================
+INSTALLATION
+---------------------------------------------------------
+1. Paste entire code into functions.php
+2. Go to:
+   Settings → Permalinks
+3. Click:
+   Save Changes
+
+=========================================================
+PUBLIC REPORT URL
+---------------------------------------------------------
+https://yourdomain.com/form-activity/
+
+PASSWORD
+---------------------------------------------------------
+@Int114
+
+=========================================================
+*/
+
+
+
+/*-------------------------------------------------------
+# CREATE DATABASE TABLE
+-------------------------------------------------------*/
+
+add_action('init', 'isfal_create_table');
+
+function isfal_create_table() {
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'cf7_activity_logs';
+
+    $charset_collate = $wpdb->get_charset_collate();
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+
+    $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+        page_title TEXT NULL,
+
+        page_url LONGTEXT NULL,
+
+        activity_type VARCHAR(100) NULL,
+
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+        PRIMARY KEY (id)
+
+    ) $charset_collate;";
+
+    dbDelta($sql);
+}
+
+
+
+/*-------------------------------------------------------
+# REGISTER PUBLIC REPORT URL
+-------------------------------------------------------*/
+
+add_action('init', 'isfal_register_report_url');
+
+function isfal_register_report_url() {
+
+    add_rewrite_rule(
+        '^form-activity/?$',
+        'index.php?cf7_activity_report=1',
+        'top'
+    );
+}
+
+
+
+/*-------------------------------------------------------
+# REGISTER QUERY VAR
+-------------------------------------------------------*/
+
+add_filter('query_vars', 'isfal_query_vars');
+
+function isfal_query_vars($vars) {
+
+    $vars[] = 'cf7_activity_report';
+
+    return $vars;
+}
+
+
+
+/*-------------------------------------------------------
+# PASSWORD PROTECTION
+-------------------------------------------------------*/
+
+add_action('template_redirect', 'isfal_password_protect_report', 1);
+
+function isfal_password_protect_report() {
+
+    if (!get_query_var('cf7_activity_report')) {
+        return;
+    }
+
+    $correct_password = '@Int114';
+
+
+
+    /*
+    ---------------------------------------------------
+    LOGOUT SUPPORT
+    ---------------------------------------------------
+    */
+
+    if (isset($_GET['logout'])) {
+
+        setcookie(
+            'isfal_report_access',
+            '',
+            time() - 3600,
+            COOKIEPATH,
+            COOKIE_DOMAIN
+        );
+
+        wp_redirect(site_url('/form-activity/'));
+
+        exit;
+    }
+
+
+
+    /*
+    ---------------------------------------------------
+    ALREADY AUTHENTICATED
+    ---------------------------------------------------
+    */
+
+    if (
+        isset($_COOKIE['isfal_report_access']) &&
+        $_COOKIE['isfal_report_access'] === md5($correct_password)
+    ) {
+
+        return;
+    }
+
+
+
+    /*
+    ---------------------------------------------------
+    PASSWORD SUBMITTED
+    ---------------------------------------------------
+    */
+
+    if (isset($_POST['isfal_report_password'])) {
+
+        $entered_password = sanitize_text_field(
+            $_POST['isfal_report_password']
+        );
+
+
+
+        if ($entered_password === $correct_password) {
+
+            setcookie(
+                'isfal_report_access',
+                md5($correct_password),
+                time() + (86400 * 7),
+                COOKIEPATH,
+                COOKIE_DOMAIN
+            );
+
+            wp_redirect(site_url('/form-activity/'));
+
+            exit;
+
+        } else {
+
+            $error = 'Incorrect Password';
+        }
+    }
+
+    ?>
+
+    <!DOCTYPE html>
+
+    <html>
+
+    <head>
+
+        <meta charset="UTF-8">
+
+        <title>Protected Report Access</title>
+
+        <style>
+
+            body{
+                font-family:Arial;
+                background:#f5f5f5;
+                display:flex;
+                justify-content:center;
+                align-items:center;
+                height:100vh;
+                margin:0;
+            }
+
+            .login-box{
+                background:#fff;
+                padding:40px;
+                width:350px;
+                border-radius:8px;
+                box-shadow:0 2px 10px rgba(0,0,0,0.1);
+                text-align:center;
+            }
+
+            input{
+                width:100%;
+                padding:12px;
+                margin-bottom:15px;
+                border:1px solid #ccc;
+                border-radius:4px;
+                box-sizing:border-box;
+            }
+
+            button{
+                width:100%;
+                padding:12px;
+                background:#0073aa;
+                color:#fff;
+                border:none;
+                border-radius:4px;
+                cursor:pointer;
+            }
+
+            .error{
+                color:red;
+                margin-bottom:15px;
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <div class="login-box">
+
+            <h2>
+                Protected Report Access
+            </h2>
+
+            <?php if (!empty($error)) { ?>
+
+                <div class="error">
+                    <?php echo esc_html($error); ?>
+                </div>
+
+            <?php } ?>
+
+            <form method="POST">
+
+                <input
+                    type="password"
+                    name="isfal_report_password"
+                    placeholder="Enter Password"
+                    required
+                >
+
+                <button type="submit">
+                    Access Report
+                </button>
+
+            </form>
+
+        </div>
+
+    </body>
+
+    </html>
+
+    <?php
+
+    exit;
+}
+
+
+
+/*-------------------------------------------------------
+# LOAD REPORT PAGE
+-------------------------------------------------------*/
+
+add_action('template_redirect', 'isfal_load_report_page');
+
+function isfal_load_report_page() {
+
+    if (get_query_var('cf7_activity_report')) {
+
+        isfal_render_report();
+
+        exit;
+    }
+}
+
+
+
+/*-------------------------------------------------------
+# TRACK SUCCESSFUL FORM SUBMISSION
+-------------------------------------------------------*/
+
+add_action('wpcf7_mail_sent', 'isfal_track_submission');
+
+function isfal_track_submission() {
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'cf7_activity_logs';
+
+    $page_title = isset($_POST['_cf7_page_title'])
+        ? sanitize_text_field($_POST['_cf7_page_title'])
+        : '';
+
+    $page_url = isset($_POST['_cf7_page_url'])
+        ? esc_url_raw($_POST['_cf7_page_url'])
+        : '';
+
+
+
+    $wpdb->insert(
+
+        $table_name,
+
+        array(
+
+            'page_title'    => $page_title,
+
+            'page_url'      => $page_url,
+
+            'activity_type' => 'Submitted',
+
+            'created_at'    => current_time('mysql')
+
+        )
+    );
+}
+
+
+
+/*-------------------------------------------------------
+# TRACK PARTIALLY FILLED FORMS
+-------------------------------------------------------*/
+
+add_action('wp_ajax_isfal_partial_activity', 'isfal_partial_activity');
+
+add_action('wp_ajax_nopriv_isfal_partial_activity', 'isfal_partial_activity');
+
+function isfal_partial_activity() {
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'cf7_activity_logs';
+
+    $page_title = isset($_POST['page_title'])
+        ? sanitize_text_field($_POST['page_title'])
+        : '';
+
+    $page_url = isset($_POST['page_url'])
+        ? esc_url_raw($_POST['page_url'])
+        : '';
+
+
+
+    /*
+    ---------------------------------------------------
+    PREVENT DUPLICATE ENTRIES
+    ---------------------------------------------------
+    */
+
+    $existing = $wpdb->get_var(
+
+        $wpdb->prepare(
+
+            "SELECT id
+             FROM $table_name
+             WHERE page_url = %s
+             AND activity_type = 'Partially Filled'
+             AND created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+             LIMIT 1",
+
+            $page_url
+        )
+    );
+
+
+
+    if (!$existing) {
+
+        $wpdb->insert(
+
+            $table_name,
+
+            array(
+
+                'page_title'    => $page_title,
+
+                'page_url'      => $page_url,
+
+                'activity_type' => 'Partially Filled',
+
+                'created_at'    => current_time('mysql')
+
+            )
+        );
+    }
+
+    wp_send_json_success();
+}
+
+
+
+/*-------------------------------------------------------
+# ADD HIDDEN FIELDS TO CF7
+-------------------------------------------------------*/
+
+add_filter('wpcf7_form_hidden_fields', 'isfal_hidden_fields');
+
+function isfal_hidden_fields($hidden_fields) {
+
+    $hidden_fields['_cf7_page_url'] = get_permalink();
+
+    $hidden_fields['_cf7_page_title'] = get_the_title();
+
+    return $hidden_fields;
+}
+
+
+
+/*-------------------------------------------------------
+# TRACK USER INPUT ACTIVITY
+-------------------------------------------------------*/
+
+add_action('wp_footer', 'isfal_tracking_script');
+
+function isfal_tracking_script() {
+
+    if (!class_exists('WPCF7')) {
+        return;
+    }
+
+    ?>
+
+    <script>
+
+    document.addEventListener('DOMContentLoaded', function () {
+
+        document.querySelectorAll('.wpcf7 form').forEach(function(form) {
+
+            let tracked = false;
+
+            form.querySelectorAll('input, textarea, select').forEach(function(field) {
+
+                field.addEventListener('input', function() {
+
+                    if (tracked) {
+                        return;
+                    }
+
+                    tracked = true;
+
+                    fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
+
+                        method: 'POST',
+
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+
+                        body: new URLSearchParams({
+
+                            action: 'isfal_partial_activity',
+
+                            page_title: document.title,
+
+                            page_url: window.location.href
+
+                        })
+
+                    });
+
+                });
+
+            });
+
+        });
+
+    });
+
+    </script>
+
+    <?php
+}
+
+
+
+/*-------------------------------------------------------
+# ADMIN MENU
+-------------------------------------------------------*/
+
+add_action('admin_menu', 'isfal_admin_menu');
+
+function isfal_admin_menu() {
+
+    add_menu_page(
+
+        'Integrative Systems Form Activity Logs',
+
+        'Form Activity Logs',
+
+        'manage_options',
+
+        'cf7-activity-logs',
+
+        'isfal_admin_page',
+
+        'dashicons-feedback',
+
+        26
+    );
+}
+
+
+
+function isfal_admin_page() {
+
+    isfal_render_report(true);
+}
+
+
+
+/*-------------------------------------------------------
+# REPORT RENDER FUNCTION
+-------------------------------------------------------*/
+
+function isfal_render_report($is_admin = false) {
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'cf7_activity_logs';
+
+
+
+    $from_date = isset($_GET['from_date'])
+        ? sanitize_text_field($_GET['from_date'])
+        : '';
+
+    $to_date = isset($_GET['to_date'])
+        ? sanitize_text_field($_GET['to_date'])
+        : '';
+
+    $search = isset($_GET['search_title'])
+        ? sanitize_text_field($_GET['search_title'])
+        : '';
+
+    $activity = isset($_GET['activity_type'])
+        ? sanitize_text_field($_GET['activity_type'])
+        : '';
+
+
+
+    $where = "WHERE 1=1";
+
+
+
+    if (!empty($from_date)) {
+
+        $where .= " AND DATE(created_at) >= '{$from_date}'";
+    }
+
+
+
+    if (!empty($to_date)) {
+
+        $where .= " AND DATE(created_at) <= '{$to_date}'";
+    }
+
+
+
+    if (!empty($search)) {
+
+        $where .= " AND page_title LIKE '%{$search}%'";
+    }
+
+
+
+    if (!empty($activity)) {
+
+        $where .= " AND activity_type = '{$activity}'";
+    }
+
+
+
+    $results = $wpdb->get_results(
+
+        "SELECT *
+         FROM $table_name
+         $where
+         ORDER BY created_at DESC"
+    );
+
+    ?>
+
+    <!DOCTYPE html>
+
+    <html>
+
+    <head>
+
+        <meta charset="UTF-8">
+
+        <title>
+            Integrative Systems Form Activity Logs
+        </title>
+
+        <style>
+
+            body{
+                font-family:Arial;
+                margin:40px;
+                background:#f5f5f5;
+            }
+
+            h1{
+                margin-bottom:20px;
+            }
+
+            table{
+                width:100%;
+                border-collapse:collapse;
+                background:#fff;
+            }
+
+            th{
+                background:#222;
+                color:#fff;
+                padding:12px;
+                text-align:left;
+            }
+
+            td{
+                padding:12px;
+                border-bottom:1px solid #ddd;
+            }
+
+            tr:nth-child(even){
+                background:#fafafa;
+            }
+
+            .submitted{
+                background:green;
+                color:#fff;
+                padding:6px 10px;
+                border-radius:4px;
+                font-weight:bold;
+            }
+
+            .partial{
+                background:orange;
+                color:#fff;
+                padding:6px 10px;
+                border-radius:4px;
+                font-weight:bold;
+            }
+
+            .filters{
+                margin-bottom:20px;
+                background:#fff;
+                padding:20px;
+                border-radius:6px;
+            }
+
+            input,
+            select{
+                padding:10px;
+                margin-right:10px;
+                margin-bottom:10px;
+            }
+
+            button{
+                padding:10px 15px;
+                background:#0073aa;
+                color:#fff;
+                border:none;
+                cursor:pointer;
+                border-radius:4px;
+            }
+
+            a{
+                color:#0073aa;
+                word-break:break-word;
+            }
+
+            .logout-btn{
+                float:right;
+                margin-bottom:20px;
+            }
+
+            @media(max-width:768px){
+
+                body{
+                    margin:15px;
+                }
+
+                table{
+                    display:block;
+                    overflow-x:auto;
+                }
+
+                input,
+                select,
+                button{
+                    width:100%;
+                }
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <a class="logout-btn"
+           href="?logout=1">
+
+            Logout
+
+        </a>
+
+        <h1>
+            Integrative Systems Form Activity Logs
+        </h1>
+
+        <div class="filters">
+
+            <form method="GET">
+
+                <?php if($is_admin){ ?>
+
+                    <input
+                        type="hidden"
+                        name="page"
+                        value="cf7-activity-logs"
+                    >
+
+                <?php } ?>
+
+
+
+                <input
+                    type="date"
+                    name="from_date"
+                    value="<?php echo esc_attr($from_date); ?>"
+                >
+
+
+
+                <input
+                    type="date"
+                    name="to_date"
+                    value="<?php echo esc_attr($to_date); ?>"
+                >
+
+
+
+                <input
+                    type="text"
+                    name="search_title"
+                    placeholder="Search Page Title"
+                    value="<?php echo esc_attr($search); ?>"
+                >
+
+
+
+                <select name="activity_type">
+
+                    <option value="">
+                        All Activity
+                    </option>
+
+                    <option value="Submitted"
+                        <?php echo ($activity == 'Submitted') ? 'selected' : ''; ?>>
+                        Submitted
+                    </option>
+
+                    <option value="Partially Filled"
+                        <?php echo ($activity == 'Partially Filled') ? 'selected' : ''; ?>>
+                        Partially Filled
+                    </option>
+
+                </select>
+
+
+
+                <button type="submit">
+                    Filter
+                </button>
+
+            </form>
+
+        </div>
+
+
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>Sl No</th>
+
+                    <th>Page Title</th>
+
+                    <th>Page URL</th>
+
+                    <th>Form Activity</th>
+
+                    <th>Date</th>
+
+                    <th>Time</th>
+
+                </tr>
+
+            </thead>
+
+            <tbody>
+
+                <?php
+
+                if($results){
+
+                    $sl = 1;
+
+                    foreach($results as $row){
+
+                        ?>
+
+                        <tr>
+
+                            <td>
+                                <?php echo $sl; ?>
+                            </td>
+
+                            <td>
+                                <?php echo esc_html($row->page_title); ?>
+                            </td>
+
+                            <td>
+
+                                <a href="<?php echo esc_url($row->page_url); ?>"
+                                   target="_blank">
+
+                                    <?php echo esc_html($row->page_url); ?>
+
+                                </a>
+
+                            </td>
+
+                            <td>
+
+                                <?php if($row->activity_type == 'Submitted'){ ?>
+
+                                    <span class="submitted">
+                                        Submitted
+                                    </span>
+
+                                <?php } else { ?>
+
+                                    <span class="partial">
+                                        Partially Filled
+                                    </span>
+
+                                <?php } ?>
+
+                            </td>
+
+                            <td>
+                                <?php echo date('Y-m-d', strtotime($row->created_at)); ?>
+                            </td>
+
+                            <td>
+                                <?php echo date('h:i A', strtotime($row->created_at)); ?>
+                            </td>
+
+                        </tr>
+
+                        <?php
+
+                        $sl++;
+                    }
+
+                } else {
+
+                    ?>
+
+                    <tr>
+
+                        <td colspan="6">
+
+                            No activity found.
+
+                        </td>
+
+                    </tr>
+
+                    <?php
+                }
+
+                ?>
+
+            </tbody>
+
+        </table>
+
+    </body>
+
+    </html>
+
+    <?php
+}
